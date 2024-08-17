@@ -123,6 +123,20 @@
       "name": "Path to ignore-file",
       "description": "Path to a custom ignore-file in '.gitignore' format for files or directories to ignore.",
       "default_value": ""
+    },
+    {
+      "id": "scan_period",
+      "type": "input",
+      "name": "Cached filesystem scan duration (seconds)",
+      "description": "Specify how long you want to reuse the cached scan before running a new one",
+      "default_value": "5"
+    },
+    {
+      "id": "scan_timeout",
+      "type": "input",
+      "name": "Scan timeout (seconds)",
+      "description": "Max amount of time before killing the scan process (set a value < 0 for no timeout)",
+      "default_value": "1.5"
     }
   ]
 }

@@ -47,9 +47,6 @@ class FuzzyFinderExtension(Extension):
     def __init__(self) -> None:
         super().__init__()
         self.fss = FileSystemSnapshot()
-        # TODO: Add settings
-        self.refresh_period = 5
-        self.fd_timeout = 5
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
 
     @staticmethod
@@ -98,6 +95,8 @@ class FuzzyFinderExtension(Extension):
             "result_limit": int(input_preferences["result_limit"]),
             "base_dir": path.expanduser(input_preferences["base_dir"]),
             "ignore_file": path.expanduser(input_preferences["ignore_file"]),
+            "scan_period": float(input_preferences["scan_period"]),
+            "scan_timeout": float(input_preferences["scan_timeout"]),
         }
 
         logger.debug("Using user preferences %s", preferences)
@@ -142,19 +141,20 @@ class FuzzyFinderExtension(Extension):
 
         return bin_names, errors
 
-    def _refresh(self, fd_cmd: List[str]):
+    def _refresh(self, fd_cmd: List[str], preferences: FuzzyFinderPreferences):
         # Re-use the previous file system reading if it was recent enough
         timestamp = time.time()
         elapsed = timestamp - self.fss.timestamp
-        if elapsed < self.refresh_period:
-            logger.debug(f"Reusing previous snapshot - elapsed_time ({elapsed}) < refresh_period ({self.refresh_period})")
+        scan_period = preferences["scan_period"]
+        if elapsed < scan_period:
+            logger.debug(f"Reusing previous snapshot - elapsed_time ({elapsed}) < refresh_period ({scan_period})")
             return
 
         # Update the file system reading
-        logger.debug(f"Updating snapshot - elapsed time ({elapsed}) >= refresh_period ({self.refresh_period})")
+        logger.debug(f"Updating snapshot - elapsed time ({elapsed}) >= refresh_period ({scan_period})")
         fd_process = subprocess.Popen(fd_cmd, stdout=subprocess.PIPE, text=True)
         try:
-            outs, errs = fd_process.communicate(timeout=self.fd_timeout)
+            outs, errs = fd_process.communicate(timeout=preferences["scan_timeout"])
         except subprocess.TimeoutExpired:
             fd_process.kill()
             raise
@@ -167,7 +167,7 @@ class FuzzyFinderExtension(Extension):
 
         # Check if the filesystem snapshot needs a refresh
         fd_cmd = FuzzyFinderExtension._generate_fd_cmd(fd_bin, preferences)
-        self._refresh(fd_cmd)
+        self._refresh(fd_cmd, preferences)
 
         # Run fzf
         fzf_cmd = [fzf_bin, "--filter", query]
@@ -252,6 +252,8 @@ class KeywordQueryEventListener(EventListener):
         self, event: KeywordQueryEvent, extension: FuzzyFinderExtension
     ) -> RenderResultListAction:
         bin_names, errors = extension.get_binaries()
+
+        # TODO: Preference update event
         errors.extend(extension.check_preferences(extension.preferences))
         if errors:
             return KeywordQueryEventListener._no_op_result_items(errors, "error")
@@ -274,9 +276,10 @@ class KeywordQueryEventListener(EventListener):
                 ["There was an error running this extension."], "error"
             )
         except subprocess.TimeoutExpired as error:
-            msg = f"Process '{error.cmd}' timed out after {error.timeout} seconds"
-            logger.error(msg)
-            return KeywordQueryEventListener._no_op_result_items([msg], "error")
+            long_msg = f"Process '{' '.join(error.cmd)}' timed out after {error.timeout} seconds"
+            short_msg = f"{error.cmd[0]} timed out after {error.timeout} s"
+            logger.error(long_msg)
+            return KeywordQueryEventListener._no_op_result_items([short_msg], "error")
 
         items = KeywordQueryEventListener._generate_result_items(preferences, results)
         return RenderResultListAction(items)
