@@ -50,6 +50,7 @@ class FuzzyFinderExtension(Extension):
         super().__init__()
         self.fss = FileSystemSnapshot()
         from preferences.listeners import PreferencesInitEventListener, PreferencesUpdateEventListener
+        self.prefs_has_errors: bool = False
         self.prefs: FuzzyFinderPreferences = {}
         self.subscribe(PreferencesEvent, PreferencesInitEventListener())
         self.subscribe(PreferencesUpdateEvent, PreferencesUpdateEventListener())
@@ -206,12 +207,9 @@ class KeywordQueryEventListener(EventListener):
 
         return list(map(create_result_item, results))
 
-    def on_event(self, event: KeywordQueryEvent, extension: FuzzyFinderExtension) -> RenderResultListAction:
-        bin_names, errors = extension.get_binaries()
-
-        # TODO: cache error presence instead of checking them on each event
-        warnings = []
-        for value in extension.prefs.values():
+    def _collect_error_and_warnings(self, prefs: FuzzyFinderPreferences) -> (List[str], List[str]):
+        errors, warnings = [], []
+        for value in prefs.values():
             if value.error is None:
                 continue
             msg = value.formatted_error_msg()
@@ -219,12 +217,17 @@ class KeywordQueryEventListener(EventListener):
                 errors.append(msg)
             else:
                 warnings.append(msg)
+        return errors, warnings
 
-        # TODO: Handle warning and errors differently
-        if errors:
-            errors_items = KeywordQueryEventListener._no_op_result_items(errors, "error")
-            warnings_items = KeywordQueryEventListener._no_op_result_items(warnings, "warning")
-            return RenderResultListAction(errors_items + warnings_items)
+    def on_event(self, event: KeywordQueryEvent, extension: FuzzyFinderExtension) -> RenderResultListAction:
+        # TODO: Remove operations that could be done only once at startup or PreferenceUpdateEvent
+        bin_names, bin_errors = extension.get_binaries()
+
+        if bin_errors or extension.prefs_has_errors:
+            pref_errors, pref_warnings = self._collect_error_and_warnings(extension.prefs)
+            errors = KeywordQueryEventListener._no_op_result_items(bin_errors + pref_errors, "error")
+            warnings = KeywordQueryEventListener._no_op_result_items(pref_warnings, "warning")
+            return RenderResultListAction(errors + warnings)
 
         query = event.get_argument()
         if not query:

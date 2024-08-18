@@ -72,28 +72,38 @@ class PreferencesInitEventListener(EventListener):
         self.add_scan_period(event, extension)
         self.add_scan_timeout(event, extension)
 
+        warning = False
         for key, value in extension.prefs.items():
             if value.error is None:
+                logger.info(f"Preference '{key}': {value.value}")
                 continue
             if value.mandatory:
-                extension.prefs_error = True
+                extension.prefs_has_errors = True
                 logger.error(f"Preference '{key}': {value.error}")
             else:
-                extension.prefs_warning = True
+                warning = True
                 logger.warning(f"Preference '{key}': {value.error}")
-        logger.debug("Using user preferences %s", extension.prefs.keys())
 
-        # if not extension.errors:
-        #     logger.debug("No errors detected in user preferences")
-        #     logger.debug("Using user preferences %s", extension.prefs)
+        if not extension.prefs_has_errors and not warning:
+            logger.debug("No errors or warnings detected in user preferences")
 
 
 # Event listener for the "PreferencesUpdateEvent"
 class PreferencesUpdateEventListener(EventListener):
+    @staticmethod
+    def check_prefs_errors(extension: FuzzyFinderExtension):
+        errors = [p.error is not None for p in extension.prefs.values() if p.mandatory]
+        extension.prefs_has_errors = any(errors)
+
     def on_event(self, event: PreferencesUpdateEvent, extension: FuzzyFinderExtension):
         logger.debug(f"Received request to change '{event.id}' from '{event.old_value}' to '{event.new_value}'")
-        valid = extension.prefs[event.id].set(event.new_value)
+        pref = extension.prefs[event.id]
+        was_wrong = pref.error is not None
+        valid = pref.set(event.new_value)
         if valid:
             logger.debug(f"'{event.id}' changed from '{event.old_value}' to '{event.new_value}'")
+            if was_wrong:
+                self.check_prefs_errors(extension)
         else:
+            extension.prefs_has_errors = True
             logger.error(f"'{event.id}' new_value '{event.new_value}' is not valid")
