@@ -151,16 +151,12 @@ class KeywordQueryEventListener(EventListener):
         return dirname
 
     @staticmethod
-    def _no_op_result_items(msgs: List[str], icon: str = "icon") -> RenderResultListAction:
-        def create_result_item(msg: str) -> ExtensionResultItem:
-            return ExtensionResultItem(
-                icon=f"images/{icon}.png",
-                name=msg,
-                on_enter=DoNothingAction(),
-            )
-
-        items = list(map(create_result_item, msgs))
-        return RenderResultListAction(items)
+    def _no_op_result_items(msgs: List[str], icon: str = "icon") -> List[ExtensionResultItem]:
+        items = [
+            ExtensionResultItem(icon=f"images/{icon}.png", name=msg, on_enter=DoNothingAction())
+            for msg in msgs
+        ]
+        return items
 
     @staticmethod
     def _get_alt_enter_action(action_type: AltEnterAction, filename: str) -> BaseAction:
@@ -214,13 +210,21 @@ class KeywordQueryEventListener(EventListener):
         bin_names, errors = extension.get_binaries()
 
         # TODO: cache error presence instead of checking them on each event
+        warnings = []
         for value in extension.prefs.values():
-            if value.error is not None:
-                errors.append(value.error)
+            if value.error is None:
+                continue
+            msg = value.formatted_error_msg()
+            if value.mandatory:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
 
         # TODO: Handle warning and errors differently
         if errors:
-            return KeywordQueryEventListener._no_op_result_items(errors, "error")
+            errors_items = KeywordQueryEventListener._no_op_result_items(errors, "error")
+            warnings_items = KeywordQueryEventListener._no_op_result_items(warnings, "warning")
+            return RenderResultListAction(errors_items + warnings_items)
 
         query = event.get_argument()
         if not query:

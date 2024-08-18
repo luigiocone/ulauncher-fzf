@@ -34,6 +34,10 @@ class Preference:
         self.value = value
         return True
 
+    def formatted_error_msg(self):
+        err_type = "ERROR" if self.mandatory else "WARNING"
+        return f'[{err_type}] [{self.name}]: {self.error}'
+
     def parse_from_str(self, str_value: str):
         raise NotImplementedError
 
@@ -48,14 +52,14 @@ class PathPreference(Preference):
 
     def parse_from_str(self, str_value: str):
         if str_value is None:
-            raise ValueError("path is None")
+            raise ValueError(f"NoneType is not a path")
         return path.expanduser(str_value)
 
     def check_error(self, parsed_value) -> str:
         if self.is_dir and not path.isdir(parsed_value):
-            return f"Value '{parsed_value}' of preference '{self.name}' is not a directory"
+            return f"'{parsed_value}' is not a directory"
         if not self.is_dir and not path.isfile(parsed_value):
-            return f"Value '{parsed_value}' of preference '{self.name}' is not a file"
+            return f"'{parsed_value}' is not a file"
         return None
 
 
