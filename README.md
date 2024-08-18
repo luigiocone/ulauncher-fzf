@@ -1,3 +1,11 @@
+## Fork activities
+1) `d813c65`: filesystem will not be continuously scanned
+2) `6b33082`: added scan preferences
+3) `831d592`: implemented correct listeners for `Preferences` events 
+and added a class hierarchy for different kind of preferences
+4) `6506586`: added an icon for warnings
+5) `8ae32c2`: preferences errors checks will now be done only on a preference change or at startup
+
 # Ulauncher Fuzzy Finder
 
 Find files and directories in Ulauncher using fzf (and fd).
