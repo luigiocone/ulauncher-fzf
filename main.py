@@ -14,9 +14,11 @@ from ulauncher.api.shared.action.CopyToClipboardAction import CopyToClipboardAct
 from ulauncher.api.shared.action.DoNothingAction import DoNothingAction
 from ulauncher.api.shared.action.OpenAction import OpenAction
 from ulauncher.api.shared.action.RenderResultListAction import RenderResultListAction
-from ulauncher.api.shared.event import KeywordQueryEvent
+from ulauncher.api.shared.event import KeywordQueryEvent, PreferencesEvent, PreferencesUpdateEvent
 from ulauncher.api.shared.item.ExtensionResultItem import ExtensionResultItem
 from ulauncher.api.shared.item.ExtensionSmallResultItem import ExtensionSmallResultItem
+
+from preferences.preferences import Preference
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +42,17 @@ class FileSystemSnapshot:
 
 BinNames = Dict[str, str]
 ExtensionPreferences = Dict[str, str]
-FuzzyFinderPreferences = Dict[str, Any]
+FuzzyFinderPreferences = Dict[str, Preference]
 
 
 class FuzzyFinderExtension(Extension):
     def __init__(self) -> None:
         super().__init__()
         self.fss = FileSystemSnapshot()
+        from preferences.listeners import PreferencesInitEventListener, PreferencesUpdateEventListener
+        self.prefs: FuzzyFinderPreferences = {}
+        self.subscribe(PreferencesEvent, PreferencesInitEventListener())
+        self.subscribe(PreferencesUpdateEvent, PreferencesUpdateEventListener())
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
 
     @staticmethod
@@ -60,65 +66,21 @@ class FuzzyFinderExtension(Extension):
         return bin_names
 
     @staticmethod
-    def check_preferences(preferences: ExtensionPreferences) -> List[str]:
-        logger.debug("Checking user preferences are valid")
-        errors = []
-
-        base_dir = preferences["base_dir"]
-        if not path.isdir(path.expanduser(base_dir)):
-            errors.append(f"Base directory '{base_dir}' is not a directory.")
-
-        ignore_file = preferences["ignore_file"]
-        if ignore_file and not path.isfile(path.expanduser(ignore_file)):
-            errors.append(f"Ignore file '{ignore_file}' is not a file.")
-
-        try:
-            result_limit = int(preferences["result_limit"])
-            if result_limit <= 0:
-                errors.append("Result limit must be greater than 0.")
-        except ValueError:
-            errors.append("Result limit must be an integer.")
-
-        if not errors:
-            logger.debug("User preferences validated")
-
-        return errors
-
-    @staticmethod
-    def get_preferences(input_preferences: ExtensionPreferences) -> FuzzyFinderPreferences:
-        preferences: FuzzyFinderPreferences = {
-            "alt_enter_action": AltEnterAction(int(input_preferences["alt_enter_action"])),
-            "search_type": SearchType(int(input_preferences["search_type"])),
-            "allow_hidden": bool(int(input_preferences["allow_hidden"])),
-            "follow_symlinks": bool(int(input_preferences["follow_symlinks"])),
-            "trim_display_path": bool(int(input_preferences["trim_display_path"])),
-            "result_limit": int(input_preferences["result_limit"]),
-            "base_dir": path.expanduser(input_preferences["base_dir"]),
-            "ignore_file": path.expanduser(input_preferences["ignore_file"]),
-            "scan_period": float(input_preferences["scan_period"]),
-            "scan_timeout": float(input_preferences["scan_timeout"]),
-        }
-
-        logger.debug("Using user preferences %s", preferences)
-
-        return preferences
-
-    @staticmethod
     def _generate_fd_cmd(fd_bin: str, preferences: FuzzyFinderPreferences) -> List[str]:
-        cmd = [fd_bin, ".", preferences["base_dir"]]
-        if preferences["search_type"] == SearchType.FILES:
+        cmd = [fd_bin, ".", preferences["base_dir"].value]
+        if preferences["search_type"].value == SearchType.FILES:
             cmd.extend(["--type", "f"])
-        elif preferences["search_type"] == SearchType.DIRS:
+        elif preferences["search_type"].value == SearchType.DIRS:
             cmd.extend(["--type", "d"])
 
-        if preferences["allow_hidden"]:
+        if preferences["allow_hidden"].value:
             cmd.extend(["--hidden"])
 
-        if preferences["follow_symlinks"]:
+        if preferences["follow_symlinks"].value:
             cmd.extend(["--follow"])
 
-        if preferences["ignore_file"]:
-            cmd.extend(["--ignore-file", preferences["ignore_file"]])
+        if preferences["ignore_file"].error is None:
+            cmd.extend(["--ignore-file", preferences["ignore_file"].value])
 
         return cmd
 
@@ -145,7 +107,7 @@ class FuzzyFinderExtension(Extension):
         # Re-use the previous file system reading if it was recent enough
         timestamp = time.time()
         elapsed = timestamp - self.fss.timestamp
-        scan_period = preferences["scan_period"]
+        scan_period = preferences["scan_period"].value
         if elapsed < scan_period:
             logger.debug(f"Reusing previous snapshot - elapsed_time ({elapsed}) < refresh_period ({scan_period})")
             return
@@ -154,7 +116,7 @@ class FuzzyFinderExtension(Extension):
         logger.debug(f"Updating snapshot - elapsed time ({elapsed}) >= refresh_period ({scan_period})")
         fd_process = subprocess.Popen(fd_cmd, stdout=subprocess.PIPE, text=True)
         try:
-            outs, errs = fd_process.communicate(timeout=preferences["scan_timeout"])
+            outs, errs = fd_process.communicate(timeout=preferences["scan_timeout"].value)
         except subprocess.TimeoutExpired:
             fd_process.kill()
             raise
@@ -176,7 +138,7 @@ class FuzzyFinderExtension(Extension):
         outs, _ = fzf_process.communicate()
 
         # Get the last 'limit' results
-        limit = preferences["result_limit"]
+        limit = preferences["result_limit"].value
         results = outs.splitlines()[:limit]
         logger.info("Found results: %s", results)
         return results
@@ -233,7 +195,7 @@ class KeywordQueryEventListener(EventListener):
         preferences: FuzzyFinderPreferences, results: List[str]
     ) -> List[ExtensionSmallResultItem]:
         path_prefix = KeywordQueryEventListener._get_path_prefix(
-            results, preferences["trim_display_path"]
+            results, preferences["trim_display_path"].value
         )
 
         def create_result_item(path_name: str) -> ExtensionSmallResultItem:
@@ -242,19 +204,21 @@ class KeywordQueryEventListener(EventListener):
                 name=KeywordQueryEventListener._get_display_name(path_name, path_prefix),
                 on_enter=OpenAction(path_name),
                 on_alt_enter=KeywordQueryEventListener._get_alt_enter_action(
-                    preferences["alt_enter_action"], path_name
+                    preferences["alt_enter_action"].value, path_name
                 ),
             )
 
         return list(map(create_result_item, results))
 
-    def on_event(
-        self, event: KeywordQueryEvent, extension: FuzzyFinderExtension
-    ) -> RenderResultListAction:
+    def on_event(self, event: KeywordQueryEvent, extension: FuzzyFinderExtension) -> RenderResultListAction:
         bin_names, errors = extension.get_binaries()
 
-        # TODO: Preference update event
-        errors.extend(extension.check_preferences(extension.preferences))
+        # TODO: cache error presence instead of checking them on each event
+        for value in extension.prefs.values():
+            if value.error is not None:
+                errors.append(value.error)
+
+        # TODO: Handle warning and errors differently
         if errors:
             return KeywordQueryEventListener._no_op_result_items(errors, "error")
 
@@ -262,8 +226,7 @@ class KeywordQueryEventListener(EventListener):
         if not query:
             return KeywordQueryEventListener._no_op_result_items(["Enter your search criteria."])
 
-        preferences = extension.get_preferences(extension.preferences)
-
+        preferences = extension.prefs
         try:
             results = extension.search(query, preferences, **bin_names)
         except subprocess.CalledProcessError as error:
