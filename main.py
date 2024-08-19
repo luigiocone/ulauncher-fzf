@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import time
 from enum import Enum
-from os import path
+from os import path, linesep
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -137,10 +137,9 @@ class FuzzyFinderExtension(Extension):
         fzf_process.stdin.write(self.fss.snapshot)
         outs, _ = fzf_process.communicate()
 
-        # Get the last 'limit' results
+        # Get the first 'limit' results
         limit = self.prefs["result_limit"].value
-        # results = outs.rsplit(sep=os.sep, maxsplit=limit)
-        results = outs.splitlines()[:limit]
+        results = outs.split(sep=linesep, maxsplit=limit+1)[:-1]   # head -n limit
         logger.info("Found results: %s", results)
         return results
 
