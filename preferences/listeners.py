@@ -3,8 +3,8 @@ import logging
 from ulauncher.api.client.EventListener import EventListener
 from ulauncher.api.shared.event import PreferencesEvent, PreferencesUpdateEvent
 
-from main import FuzzyFinderExtension, AltEnterAction, SearchType
-from preferences.preferences import Preference, PathPreference, IntPreference, FloatPreference
+from main import FuzzyFinderExtension, Actions, SearchType
+from preferences.preferences import Preference, PathPreference, IntPreference, FloatPreference, KeywordPreference
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ class PreferencesInitEventListener(EventListener):
     def add_secure_preferences(event: PreferencesEvent, extension: FuzzyFinderExtension):
         """ Preferences that do not cause errors (trusting ulauncher) """
         prefs = {
-            "alt_enter_action": AltEnterAction(int(event.preferences["alt_enter_action"])),
+            "alt_enter_action": Actions(int(event.preferences["alt_enter_action"])),
             "search_type": SearchType(int(event.preferences["search_type"])),
             "allow_hidden": bool(int(event.preferences["allow_hidden"])),
             "follow_symlinks": bool(int(event.preferences["follow_symlinks"])),
@@ -62,6 +62,13 @@ class PreferencesInitEventListener(EventListener):
         value = event.preferences[key] if key in event.preferences else None
         extension.prefs[key].set(value=value, parse=True)
 
+    @staticmethod
+    def add_keywords(event: PreferencesEvent, extension: FuzzyFinderExtension):
+        for key in ["fzf_kw", "term_kw"]:
+            extension.prefs[key] = KeywordPreference(name=key, mandatory=True, keyword_id=key)
+            value = event.preferences[key] if key in event.preferences else None
+            extension.prefs[key].set(value=value, parse=False)
+
     def on_event(self, event: PreferencesEvent, extension: FuzzyFinderExtension):
         logger.debug("Received user preferences, checking their validity")
 
@@ -71,7 +78,9 @@ class PreferencesInitEventListener(EventListener):
         self.add_result_limit(event, extension)
         self.add_scan_period(event, extension)
         self.add_scan_timeout(event, extension)
+        self.add_keywords(event, extension)
 
+        # Register errors and warnings
         warning = False
         for key, value in extension.prefs.items():
             if value.error is None:
@@ -86,6 +95,9 @@ class PreferencesInitEventListener(EventListener):
 
         if not extension.prefs_have_errors and not warning:
             logger.debug("No errors or warnings detected in user preferences")
+
+        # Store the reference to keywords preferences in another structure
+        extension.keyword_prefs = [p for p in extension.prefs.values() if isinstance(p, KeywordPreference)]
 
         # Generate commands after the preference setup
         extension.generate_fzf_cmd()

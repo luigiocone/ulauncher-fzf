@@ -55,7 +55,7 @@ class PathPreference(Preference):
             raise ValueError(f"NoneType is not a path")
         return path.expanduser(str_value)
 
-    def check_error(self, parsed_value) -> str:
+    def check_error(self, parsed_value) -> Optional[str]:
         if self.is_dir and not path.isdir(parsed_value):
             return f"'{parsed_value}' is not a directory"
         if not self.is_dir and not path.isfile(parsed_value):
@@ -71,7 +71,7 @@ class IntPreference(Preference):
     def parse_from_str(self, str_value: str):
         return int(str_value)
 
-    def check_error(self, parsed_value) -> str:
+    def check_error(self, parsed_value) -> Optional[str]:
         for cnt in self.constraints:
             error = cnt(parsed_value)
             if error:
@@ -84,3 +84,12 @@ class FloatPreference(IntPreference):
         return float(str_value)
 
 
+class KeywordPreference(Preference):
+    def __init__(self, name: str, keyword_id: str, value=None, mandatory=False):
+        super().__init__(name, value, mandatory)
+        self.keyword_id = keyword_id
+
+    def check_error(self, value: str) -> Optional[str]:
+        if value is None:
+            return "NoneType is not a valid keyword"
+        return None

@@ -14,16 +14,17 @@ from ulauncher.api.shared.action.CopyToClipboardAction import CopyToClipboardAct
 from ulauncher.api.shared.action.DoNothingAction import DoNothingAction
 from ulauncher.api.shared.action.OpenAction import OpenAction
 from ulauncher.api.shared.action.RenderResultListAction import RenderResultListAction
+from ulauncher.api.shared.action.RunScriptAction import RunScriptAction
 from ulauncher.api.shared.event import KeywordQueryEvent, PreferencesEvent, PreferencesUpdateEvent
 from ulauncher.api.shared.item.ExtensionResultItem import ExtensionResultItem
 from ulauncher.api.shared.item.ExtensionSmallResultItem import ExtensionSmallResultItem
 
-from preferences.preferences import Preference
+from preferences.preferences import Preference, KeywordPreference
 
 logger = logging.getLogger(__name__)
 
 
-class AltEnterAction(Enum):
+class Actions(Enum):
     OPEN_PATH = 0
     COPY_PATH = 1
 
@@ -58,9 +59,12 @@ class FuzzyFinderExtension(Extension):
         super().__init__()
         self.fss = FileSystemSnapshot()
         self.bins = BinData()
+
         from preferences.listeners import PreferencesInitEventListener, PreferencesUpdateEventListener
         self.prefs_have_errors: bool = False
         self.prefs: FuzzyFinderPreferences = {}
+        self.keyword_prefs: List[KeywordPreference]
+
         self.subscribe(PreferencesEvent, PreferencesInitEventListener())
         self.subscribe(PreferencesUpdateEvent, PreferencesUpdateEventListener())
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
@@ -159,10 +163,24 @@ class KeywordQueryEventListener(EventListener):
         return items
 
     @staticmethod
-    def _get_alt_enter_action(action_type: AltEnterAction, filename: str) -> BaseAction:
-        # Default to opening directory, even if invalid action provided
-        action = OpenAction(KeywordQueryEventListener._get_dirname(filename))
-        if action_type == AltEnterAction.COPY_PATH:
+    def _get_enter_action(path_name: str, keyword_id: str) -> BaseAction:
+        dirname = KeywordQueryEventListener._get_dirname(path_name)
+        if keyword_id == "term_kw":
+            return RunScriptAction(f"gnome-terminal --geometry 160x25 --working-directory \"{dirname}\"")
+
+        if keyword_id == "fzf_kw":
+            return OpenAction(dirname)
+
+        return CopyToClipboardAction(path_name)
+
+    @staticmethod
+    def _get_alt_enter_action(action_type: Actions, filename: str, keyword_id: str) -> BaseAction:
+        dirname = KeywordQueryEventListener._get_dirname(filename)
+        if keyword_id == "term_kw":
+            return RunScriptAction(f"gnome-terminal --tab --working-directory \"{dirname}\"")
+
+        action = OpenAction(dirname)
+        if action_type == Actions.COPY_PATH:
             action = CopyToClipboardAction(filename)
         return action
 
@@ -188,25 +206,27 @@ class KeywordQueryEventListener(EventListener):
 
     @staticmethod
     def _generate_result_items(
-        preferences: FuzzyFinderPreferences, results: List[str]
+        preferences: FuzzyFinderPreferences, results: List[str], keyword_id: str
     ) -> List[ExtensionSmallResultItem]:
-        path_prefix = KeywordQueryEventListener._get_path_prefix(
-            results, preferences["trim_display_path"].value
-        )
 
-        def create_result_item(path_name: str) -> ExtensionSmallResultItem:
-            return ExtensionSmallResultItem(
-                icon="images/sub-icon.png",
-                name=KeywordQueryEventListener._get_display_name(path_name, path_prefix),
-                on_enter=OpenAction(path_name),
-                on_alt_enter=KeywordQueryEventListener._get_alt_enter_action(
-                    preferences["alt_enter_action"].value, path_name
-                ),
+        path_prefix = KeywordQueryEventListener._get_path_prefix(results, preferences["trim_display_path"].value)
+
+        items = []
+        for path_name in results:
+            items.append(
+                ExtensionSmallResultItem(
+                    icon="images/sub-icon.png",
+                    name=KeywordQueryEventListener._get_display_name(path_name, path_prefix),
+                    on_enter=KeywordQueryEventListener._get_enter_action(path_name, keyword_id),
+                    on_alt_enter=KeywordQueryEventListener._get_alt_enter_action(
+                        preferences["alt_enter_action"].value, path_name, keyword_id
+                    )
+                )
             )
+        return items
 
-        return list(map(create_result_item, results))
-
-    def _collect_error_and_warnings(self, prefs: FuzzyFinderPreferences) -> (List[str], List[str]):
+    @staticmethod
+    def _collect_error_and_warnings(prefs: FuzzyFinderPreferences) -> (List[str], List[str]):
         errors, warnings = [], []
         for value in prefs.values():
             if value.error is None:
@@ -217,6 +237,13 @@ class KeywordQueryEventListener(EventListener):
             else:
                 warnings.append(msg)
         return errors, warnings
+
+    @staticmethod
+    def _get_keyword_id(keyword: str, keyword_preferences: List[KeywordPreference]):
+        """ Find the keyword id using the keyword (since the keyword can be changed by users) """
+        for kp in keyword_preferences:
+            if kp.value == keyword:
+                return kp.keyword_id
 
     def on_event(self, event: KeywordQueryEvent, extension: FuzzyFinderExtension) -> RenderResultListAction:
         bins_have_errors = extension.bins.fd_error or extension.bins.fzf_error
@@ -230,25 +257,30 @@ class KeywordQueryEventListener(EventListener):
 
         query = event.get_argument()
         if not query:
-            return KeywordQueryEventListener._no_op_result_items(["Enter your search criteria."])
+            items = KeywordQueryEventListener._no_op_result_items(["Enter your search criteria."])
+            return RenderResultListAction(items)
 
         try:
             results = extension.search(query)
         except subprocess.CalledProcessError as error:
             if error.cmd[0] == "fzf" and error.returncode == 1:
-                return KeywordQueryEventListener._no_op_result_items(["No results found."])
+                items = KeywordQueryEventListener._no_op_result_items(["No results found."])
+                return RenderResultListAction(items)
 
             logger.debug("Subprocess %s failed with status code %s", error.cmd, error.returncode)
-            return KeywordQueryEventListener._no_op_result_items(
+            items = KeywordQueryEventListener._no_op_result_items(
                 [f"{error.cmd[0]} returned status code '{error.returncode}'"], "error"
             )
+            return RenderResultListAction(items)
         except subprocess.TimeoutExpired as error:
             long_msg = f"Process '{' '.join(error.cmd)}' timed out after {error.timeout} seconds"
             short_msg = f"{error.cmd[0]} timed out after {error.timeout} s"
             logger.error(long_msg)
-            return KeywordQueryEventListener._no_op_result_items([short_msg], "error")
+            items = KeywordQueryEventListener._no_op_result_items([short_msg], "error")
+            return RenderResultListAction(items)
 
-        items = KeywordQueryEventListener._generate_result_items(extension.prefs, results)
+        keyword_id = self._get_keyword_id(event.get_keyword(), extension.keyword_prefs)
+        items = KeywordQueryEventListener._generate_result_items(extension.prefs, results, keyword_id)
         return RenderResultListAction(items)
 
 

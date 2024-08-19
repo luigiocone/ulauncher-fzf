@@ -5,21 +5,27 @@
   "developer_name": "Hillary Chan",
   "icon": "images/icon.png",
   "options": {
-    "query_debounce": 0.5
+    "query_debounce": 0.25
   },
   "preferences": [
     {
-      "id": "kw",
+      "id": "fzf_kw",
       "type": "keyword",
       "name": "Fuzzy Finder",
       "default_value": "fzf"
+    },
+    {
+      "id": "term_kw",
+      "type": "keyword",
+      "name": "Open path in terminal",
+      "default_value": "t"
     },
     {
       "id": "alt_enter_action",
       "type": "select",
       "name": "Alt+Enter action",
       "description": "Set the preferred behaviour for Alt+Enter.",
-      "default_value": 0,
+      "default_value": 1,
       "options": [
         {
           "text": "Open path's directory",
@@ -136,7 +142,7 @@
       "type": "input",
       "name": "Scan process timeout (seconds)",
       "description": "Max amount of time before killing the scan process (set a value < 0 for no timeout)",
-      "default_value": "1.5"
+      "default_value": "2.5"
     }
   ]
 }
