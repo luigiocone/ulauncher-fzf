@@ -4,7 +4,7 @@ import subprocess
 import time
 from enum import Enum
 from os import path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ulauncher.api.client.EventListener import EventListener
@@ -40,6 +40,14 @@ class FileSystemSnapshot:
     timestamp: int = -1
 
 
+@dataclass
+class BinData:
+    fzf_cmd: List[str] = None
+    fd_cmd: List[str] = None
+    fzf_error: Optional[str] = None
+    fd_error: Optional[str] = None
+
+
 BinNames = Dict[str, str]
 ExtensionPreferences = Dict[str, str]
 FuzzyFinderPreferences = Dict[str, Preference]
@@ -49,25 +57,23 @@ class FuzzyFinderExtension(Extension):
     def __init__(self) -> None:
         super().__init__()
         self.fss = FileSystemSnapshot()
+        self.bins = BinData()
         from preferences.listeners import PreferencesInitEventListener, PreferencesUpdateEventListener
-        self.prefs_has_errors: bool = False
+        self.prefs_have_errors: bool = False
         self.prefs: FuzzyFinderPreferences = {}
         self.subscribe(PreferencesEvent, PreferencesInitEventListener())
         self.subscribe(PreferencesUpdateEvent, PreferencesUpdateEventListener())
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
 
-    @staticmethod
-    def _assign_bin_name(bin_names: BinNames, bin_cmd: str, testing_cmd: str) -> BinNames:
-        try:
-            if shutil.which(testing_cmd):
-                bin_names[bin_cmd] = testing_cmd
-        except subprocess.CalledProcessError:
-            pass
+    def generate_fd_cmd(self):
+        fd_bin = "fd" if shutil.which("fd") else "fdfind" if shutil.which("fdfind") else None
+        if fd_bin is None:
+            msg = "Missing dependency fd. Please install fd."
+            logger.error(msg)
+            self.bins.fd_error = msg
+            return
 
-        return bin_names
-
-    @staticmethod
-    def _generate_fd_cmd(fd_bin: str, preferences: FuzzyFinderPreferences) -> List[str]:
+        preferences = self.prefs
         cmd = [fd_bin, ".", preferences["base_dir"].value]
         if preferences["search_type"].value == SearchType.FILES:
             cmd.extend(["--type", "f"])
@@ -83,41 +89,35 @@ class FuzzyFinderExtension(Extension):
         if preferences["ignore_file"].error is None:
             cmd.extend(["--ignore-file", preferences["ignore_file"].value])
 
-        return cmd
+        logger.debug("Using fd command: %s", cmd)
+        self.bins.fd_cmd = cmd
+        self.bins.fd_error = None
 
-    def get_binaries(self) -> Tuple[BinNames, List[str]]:
-        logger.debug("Checking and getting binaries for dependencies")
-        bin_names: BinNames = {}
-        bin_names = FuzzyFinderExtension._assign_bin_name(bin_names, "fzf_bin", "fzf")
-        bin_names = FuzzyFinderExtension._assign_bin_name(bin_names, "fd_bin", "fd")
-        if bin_names.get("fd_bin") is None:
-            bin_names = FuzzyFinderExtension._assign_bin_name(bin_names, "fd_bin", "fdfind")
+    def generate_fzf_cmd(self):
+        if shutil.which("fzf") is None:
+            msg = "Missing dependency fzf. Please install fzf."
+            logger.error(msg)
+            self.bins.fzf_error = msg
+            return
+        cmd = ["fzf", "--filter"]
+        logger.debug("Using fzf command: %s", cmd + ["<input>"])
+        self.bins.fzf_cmd = cmd
+        self.bins.fzf_error = None
 
-        errors = []
-        if bin_names.get("fzf_bin") is None:
-            errors.append("Missing dependency fzf. Please install fzf.")
-        if bin_names.get("fd_bin") is None:
-            errors.append("Missing dependency fd. Please install fd.")
-
-        if not errors:
-            logger.debug("Using binaries %s", bin_names)
-
-        return bin_names, errors
-
-    def _refresh(self, fd_cmd: List[str], preferences: FuzzyFinderPreferences):
+    def _refresh_scan(self):
         # Re-use the previous file system reading if it was recent enough
         timestamp = time.time()
         elapsed = timestamp - self.fss.timestamp
-        scan_period = preferences["scan_period"].value
+        scan_period = self.prefs["scan_period"].value
         if elapsed < scan_period:
             logger.debug(f"Reusing previous snapshot - elapsed_time ({elapsed}) < refresh_period ({scan_period})")
             return
 
         # Update the file system reading
         logger.debug(f"Updating snapshot - elapsed time ({elapsed}) >= refresh_period ({scan_period})")
-        fd_process = subprocess.Popen(fd_cmd, stdout=subprocess.PIPE, text=True)
+        fd_process = subprocess.Popen(self.bins.fd_cmd, stdout=subprocess.PIPE, text=True)
         try:
-            outs, errs = fd_process.communicate(timeout=preferences["scan_timeout"].value)
+            outs, errs = fd_process.communicate(timeout=self.prefs["scan_timeout"].value)
         except subprocess.TimeoutExpired:
             fd_process.kill()
             raise
@@ -125,21 +125,21 @@ class FuzzyFinderExtension(Extension):
         self.fss.timestamp = timestamp
         self.fss.snapshot = outs
 
-    def search(self, query: str, preferences: FuzzyFinderPreferences, fd_bin: str, fzf_bin: str) -> List[str]:
+    def search(self, query: str) -> List[str]:
         logger.debug("Finding results for %s", query)
 
         # Check if the filesystem snapshot needs a refresh
-        fd_cmd = FuzzyFinderExtension._generate_fd_cmd(fd_bin, preferences)
-        self._refresh(fd_cmd, preferences)
+        self._refresh_scan()
 
         # Run fzf
-        fzf_cmd = [fzf_bin, "--filter", query]
+        fzf_cmd = self.bins.fzf_cmd + [query]
         fzf_process = subprocess.Popen(fzf_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         fzf_process.stdin.write(self.fss.snapshot)
         outs, _ = fzf_process.communicate()
 
         # Get the last 'limit' results
-        limit = preferences["result_limit"].value
+        limit = self.prefs["result_limit"].value
+        # results = outs.rsplit(sep=os.sep, maxsplit=limit)
         results = outs.splitlines()[:limit]
         logger.info("Found results: %s", results)
         return results
@@ -220,11 +220,11 @@ class KeywordQueryEventListener(EventListener):
         return errors, warnings
 
     def on_event(self, event: KeywordQueryEvent, extension: FuzzyFinderExtension) -> RenderResultListAction:
-        # TODO: Remove operations that could be done only once at startup or PreferenceUpdateEvent
-        bin_names, bin_errors = extension.get_binaries()
-
-        if bin_errors or extension.prefs_has_errors:
+        bins_have_errors = extension.bins.fd_error or extension.bins.fzf_error
+        if bins_have_errors or extension.prefs_have_errors:
             pref_errors, pref_warnings = self._collect_error_and_warnings(extension.prefs)
+            bin_errors = [extension.bins.fd_error, extension.bins.fzf_error]
+            bin_errors = [e for e in bin_errors if e is not None]
             errors = KeywordQueryEventListener._no_op_result_items(bin_errors + pref_errors, "error")
             warnings = KeywordQueryEventListener._no_op_result_items(pref_warnings, "warning")
             return RenderResultListAction(errors + warnings)
@@ -233,17 +233,15 @@ class KeywordQueryEventListener(EventListener):
         if not query:
             return KeywordQueryEventListener._no_op_result_items(["Enter your search criteria."])
 
-        preferences = extension.prefs
         try:
-            results = extension.search(query, preferences, **bin_names)
+            results = extension.search(query)
         except subprocess.CalledProcessError as error:
-            failing_cmd = error.cmd[0]
-            if failing_cmd == "fzf" and error.returncode == 1:
+            if error.cmd[0] == "fzf" and error.returncode == 1:
                 return KeywordQueryEventListener._no_op_result_items(["No results found."])
 
             logger.debug("Subprocess %s failed with status code %s", error.cmd, error.returncode)
             return KeywordQueryEventListener._no_op_result_items(
-                ["There was an error running this extension."], "error"
+                [f"{error.cmd[0]} returned status code '{error.returncode}'"], "error"
             )
         except subprocess.TimeoutExpired as error:
             long_msg = f"Process '{' '.join(error.cmd)}' timed out after {error.timeout} seconds"
@@ -251,7 +249,7 @@ class KeywordQueryEventListener(EventListener):
             logger.error(long_msg)
             return KeywordQueryEventListener._no_op_result_items([short_msg], "error")
 
-        items = KeywordQueryEventListener._generate_result_items(preferences, results)
+        items = KeywordQueryEventListener._generate_result_items(extension.prefs, results)
         return RenderResultListAction(items)
 
 

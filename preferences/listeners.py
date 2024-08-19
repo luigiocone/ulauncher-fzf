@@ -78,14 +78,18 @@ class PreferencesInitEventListener(EventListener):
                 logger.info(f"Preference '{key}': {value.value}")
                 continue
             if value.mandatory:
-                extension.prefs_has_errors = True
+                extension.prefs_have_errors = True
                 logger.error(f"Preference '{key}': {value.error}")
             else:
                 warning = True
                 logger.warning(f"Preference '{key}': {value.error}")
 
-        if not extension.prefs_has_errors and not warning:
+        if not extension.prefs_have_errors and not warning:
             logger.debug("No errors or warnings detected in user preferences")
+
+        # Generate commands after the preference setup
+        extension.generate_fzf_cmd()
+        extension.generate_fd_cmd()
 
 
 # Event listener for the "PreferencesUpdateEvent"
@@ -93,7 +97,7 @@ class PreferencesUpdateEventListener(EventListener):
     @staticmethod
     def check_prefs_errors(extension: FuzzyFinderExtension):
         errors = [p.error is not None for p in extension.prefs.values() if p.mandatory]
-        extension.prefs_has_errors = any(errors)
+        extension.prefs_have_errors = any(errors)
 
     def on_event(self, event: PreferencesUpdateEvent, extension: FuzzyFinderExtension):
         logger.debug(f"Received request to change '{event.id}' from '{event.old_value}' to '{event.new_value}'")
@@ -105,5 +109,8 @@ class PreferencesUpdateEventListener(EventListener):
             if was_wrong:
                 self.check_prefs_errors(extension)
         else:
-            extension.prefs_has_errors = True
+            extension.prefs_have_errors = True
             logger.error(f"'{event.id}' new_value '{event.new_value}' is not valid")
+
+        # Update fdfind command since it holds some user preferences
+        extension.generate_fd_cmd()

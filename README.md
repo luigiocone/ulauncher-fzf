@@ -5,6 +5,8 @@
 and added a class hierarchy for different kind of preferences
 4) `6506586`: added an icon for warnings
 5) `8ae32c2`: preferences errors checks will now be done only on a preference change or at startup
+6) `current`: removed redundant operations from `KeywordQueryEventListener.on_event` method
+
 
 # Ulauncher Fuzzy Finder
 
